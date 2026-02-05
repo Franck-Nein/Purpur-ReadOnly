@@ -1,5 +1,114 @@
 --- a/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
 +++ b/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
+@@ -4,6 +_,9 @@
+ import java.io.DataInputStream;
+ import java.io.DataOutputStream;
+ import java.io.IOException;
++import java.nio.file.AccessDeniedException;
++import java.nio.file.FileSystemException;
++import java.nio.file.Files;
+ import java.nio.file.Path;
+ import javax.annotation.Nullable;
+ import net.minecraft.FileUtil;
+@@ -23,6 +_,8 @@
+     private final RegionStorageInfo info;
+     private final Path folder;
+     private final boolean sync;
++    private final boolean readOnly;
++    private boolean loggedReadOnlySkip;
+ 
+     // Paper start - recalculate region file headers
+     private final boolean isChunkData;
+@@ -126,7 +_,7 @@
+ 
+         FileUtil.createDirectoriesSafe(this.folder);
+ 
+-        ret = new RegionFile(this.info, regionPath, this.folder, this.sync);
++        ret = this.openRegionFile(regionPath);
+ 
+         this.regionCache.putAndMoveToFirst(key, ret);
+ 
+@@ -146,6 +_,15 @@
+ 
+         final ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+         final RegionFile regionFile = this.getRegionFile(pos);
++        if (regionFile == null) {
++            this.logReadOnlySkip(pos);
++            return new ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData(
++                compound,
++                ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData.WriteResult.DELETE,
++                null,
++                null
++            );
++        }
+ 
+         // note: not required to keep regionfile loaded after this call, as the write param takes a regionfile as input
+         // (and, the regionfile parameter is unused for writing until the write call)
+@@ -177,6 +_,10 @@
+     public final void moonrise$finishWrite(
+         final int chunkX, final int chunkZ, final ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData writeData
+     ) throws IOException {
++        if (this.readOnly) {
++            this.logReadOnlySkip(new ChunkPos(chunkX, chunkZ));
++            return;
++        }
+         final ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+         if (writeData.result() == ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData.WriteResult.DELETE) {
+             final RegionFile regionFile = this.moonrise$getRegionFileIfExists(chunkX, chunkZ);
+@@ -273,6 +_,35 @@
+         this.sync = sync;
+         this.info = info;
+         this.isChunkData = isChunkDataFolder(this.folder); // Paper - recalculate region file headers
++        this.readOnly = this.detectReadOnly(folder, info);
++    }
++
++    private boolean detectReadOnly(final Path folder, final RegionStorageInfo info) {
++        if (!Files.exists(folder)) {
++            return false;
++        }
++        try {
++            if (!Files.isWritable(folder)) {
++                return true;
++            }
++        } catch (Exception ignored) {
++            // If we cannot determine writability, fall back to the configured toggle below.
++        }
++
++        final String configured = System.getProperty("purpur.read-only-worlds", "");
++        if (!configured.isEmpty()) {
++            for (final String token : configured.split(",")) {
++                final String candidate = token.trim();
++                if (candidate.isEmpty()) {
++                    continue;
++                }
++                if (candidate.equalsIgnoreCase(info.level())
++                    || candidate.equalsIgnoreCase(folder.getFileName().toString())) {
++                    return true;
++                }
++            }
++        }
++        return false;
+     }
+ 
+     @org.jetbrains.annotations.Contract("_, false -> !null") @Nullable private RegionFile getRegionFile(ChunkPos chunkPos, boolean existingOnly) throws IOException { // CraftBukkit
+@@ -294,11 +_,16 @@
+ 
+             final Path regionPath = this.folder.resolve(getRegionFileName(chunkPos.x, chunkPos.z));
+ 
++            if (this.readOnly && !Files.exists(regionPath)) {
++                this.markNonExisting(key);
++                return null;
++            }
++
+             this.createRegionFile(key);
+ 
+             FileUtil.createDirectoriesSafe(this.folder);
+ 
+-            ret = new RegionFile(this.info, regionPath, this.folder, this.sync);
++            ret = this.openRegionFile(regionPath);
+ 
+             this.regionCache.putAndMoveToFirst(key, ret);
+ 
 @@ -309,7 +_,7 @@
  
      // Paper start
@@ -9,3 +118,43 @@
      }
  
      private static CompoundTag readOversizedChunk(RegionFile regionfile, ChunkPos chunkCoordinate) throws IOException {
+@@ -400,6 +_,10 @@
+     }
+ 
+     public void write(ChunkPos chunkPos, @Nullable CompoundTag chunkData) throws IOException { // Paper - rewrite chunk system - public
++        if (this.readOnly) {
++            this.logReadOnlySkip(chunkPos);
++            return;
++        }
+         if (!SharedConstants.DEBUG_DONT_SAVE_WORLD) {
+             RegionFile regionFile = this.getRegionFile(chunkPos, chunkData == null); // CraftBukkit // Paper - rewrite chunk system
+             // Paper start - rewrite chunk system
+@@ -459,6 +_,28 @@
+             exceptionCollector.throwIfPresent();
+         }
+         // Paper end - rewrite chunk system
++    }
++
++    private RegionFile openRegionFile(final Path regionPath) throws IOException {
++        try {
++            return new RegionFile(this.info, regionPath, this.folder, this.sync, this.readOnly);
++        } catch (FileSystemException ex) {
++            if (!this.readOnly) {
++                LOGGER.warn("Falling back to read-only access for region file {}", regionPath, ex);
++                return new RegionFile(this.info, regionPath, this.folder, this.sync, true);
++            }
++            throw ex;
++        }
++    }
++
++    private void logReadOnlySkip(final ChunkPos pos) {
++        if (!this.loggedReadOnlySkip) {
++            LOGGER.warn("Skipping chunk saves for read-only world '{}' at folder {}", this.info.level(), this.folder.toAbsolutePath());
++            this.loggedReadOnlySkip = true;
++        }
++        if (pos != null) {
++            LOGGER.debug("Read-only world {} ignoring save for chunk {}", this.info.level(), pos);
++        }
+     }
+ 
+     public RegionStorageInfo info() {

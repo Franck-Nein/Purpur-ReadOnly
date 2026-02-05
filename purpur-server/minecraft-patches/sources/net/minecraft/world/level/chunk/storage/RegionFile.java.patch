@@ -1,0 +1,180 @@
+--- a/net/minecraft/world/level/chunk/storage/RegionFile.java
++++ b/net/minecraft/world/level/chunk/storage/RegionFile.java
+@@ -8,6 +_,7 @@
+ import java.io.DataOutputStream;
+ import java.io.IOException;
+ import java.io.InputStream;
++import java.io.OutputStream;
+ import java.nio.ByteBuffer;
+ import java.nio.IntBuffer;
+ import java.nio.channels.FileChannel;
+@@ -39,6 +_,7 @@
+     private final Path path;
+     private final FileChannel file;
+     private final Path externalFileDir;
++    private final boolean readOnly;
+     final RegionFileVersion version;
+     private final ByteBuffer header = ByteBuffer.allocateDirect(8192);
+     private final IntBuffer offsets;
+@@ -104,11 +_,17 @@
+     }
+ 
+     private void backupRegionFile() {
++        if (this.readOnly) {
++            return;
++        }
+         Path backup = this.path.getParent().resolve(this.path.getFileName() + "." + new java.util.Random().nextLong() + ".backup");
+         this.backupRegionFile(backup);
+     }
+ 
+     private void backupRegionFile(Path to) {
++        if (this.readOnly) {
++            return;
++        }
+         try {
+             this.file.force(true);
+             LOGGER.warn("Backing up regionfile \"" + this.path.toAbsolutePath() + "\" to " + to.toAbsolutePath());
+@@ -131,6 +_,9 @@
+     }
+ 
+     boolean recalculateHeader() throws IOException {
++        if (this.readOnly) {
++            return false;
++        }
+         if (!this.canRecalcHeader) {
+             return false;
+         }
+@@ -419,24 +_,35 @@
+     // Paper end - rewrite chunk system
+ 
+     public RegionFile(RegionStorageInfo info, Path path, Path externalFileDir, boolean sync) throws IOException {
+-        this(info, path, externalFileDir, RegionFileVersion.getCompressionFormat(), sync); // Paper - Configurable region compression format
++        this(info, path, externalFileDir, RegionFileVersion.getCompressionFormat(), sync, false); // Paper - Configurable region compression format
+     }
+ 
+     public RegionFile(RegionStorageInfo info, Path path, Path externalFileDir, RegionFileVersion version, boolean sync) throws IOException {
++        this(info, path, externalFileDir, version, sync, false);
++    }
++
++    public RegionFile(RegionStorageInfo info, Path path, Path externalFileDir, boolean sync, boolean readOnly) throws IOException {
++        this(info, path, externalFileDir, RegionFileVersion.getCompressionFormat(), sync, readOnly);
++    }
++
++    public RegionFile(RegionStorageInfo info, Path path, Path externalFileDir, RegionFileVersion version, boolean sync, boolean readOnly) throws IOException {
+         this.info = info;
+         this.path = path;
+         this.version = version;
++        this.readOnly = readOnly;
+         this.initOversizedState(); // Paper
+         if (!Files.isDirectory(externalFileDir)) {
+             throw new IllegalArgumentException("Expected directory, got " + externalFileDir.toAbsolutePath());
+         } else {
+             this.externalFileDir = externalFileDir;
+-            this.canRecalcHeader = RegionFileStorage.isChunkDataFolder(this.externalFileDir); // Paper - add can recalc flag
++            this.canRecalcHeader = !this.readOnly && RegionFileStorage.isChunkDataFolder(this.externalFileDir); // Paper - add can recalc flag
+             this.offsets = this.header.asIntBuffer();
+             this.offsets.limit(1024);
+             this.header.position(4096);
+             this.timestamps = this.header.asIntBuffer();
+-            if (sync) {
++            if (this.readOnly) {
++                this.file = FileChannel.open(path, StandardOpenOption.READ);
++            } else if (sync) {
+                 this.file = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.DSYNC);
+             } else {
+                 this.file = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+@@ -775,14 +_,23 @@
+     }
+ 
+     public DataOutputStream getChunkDataOutputStream(ChunkPos chunkPos) throws IOException {
++        if (this.readOnly) {
++            return new DataOutputStream(OutputStream.nullOutputStream());
++        }
+         return new DataOutputStream(this.version.wrap(new RegionFile.ChunkBuffer(chunkPos)));
+     }
+ 
+     public void flush() throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         this.file.force(true);
+     }
+ 
+     public void clear(ChunkPos chunkPos) throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         int offsetIndex = getOffsetIndex(chunkPos);
+         int i = this.offsets.get(offsetIndex);
+         if (i != 0) {
+@@ -795,6 +_,9 @@
+     }
+ 
+     protected synchronized void write(ChunkPos chunkPos, ByteBuffer chunkData) throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         int offsetIndex = getOffsetIndex(chunkPos);
+         int i = this.offsets.get(offsetIndex);
+         int sectorNumber = getSectorNumber(i);
+@@ -856,6 +_,9 @@
+     }
+ 
+     private void writeHeader() throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         this.header.position(0);
+         this.file.write(this.header, 0L);
+     }
+@@ -874,6 +_,10 @@
+ 
+     @Override
+     public void close() throws IOException {
++        if (this.readOnly) {
++            this.file.close();
++            return;
++        }
+         try {
+             this.padToFullSector();
+         } finally {
+@@ -886,6 +_,9 @@
+     }
+ 
+     private void padToFullSector() throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         int i = (int)this.file.size();
+         int i1 = sizeToSectors(i) * 4096;
+         if (i != i1) {
+@@ -947,6 +_,9 @@
+ 
+         @Override
+         public void close() throws IOException {
++            if (RegionFile.this.readOnly) {
++                return;
++            }
+             ByteBuffer byteBuffer = ByteBuffer.wrap(this.buf, 0, this.count);
+             int i = this.count - 5 + 1;
+             JvmProfiler.INSTANCE.onRegionFileWrite(RegionFile.this.info, this.pos, RegionFile.this.version, i);
+@@ -983,6 +_,9 @@
+     }
+ 
+     synchronized void setOversized(int x, int z, boolean oversized) throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         final int offset = getChunkIndex(x, z);
+         boolean previous = this.oversized[offset] == 1;
+         this.oversized[offset] = (byte) (oversized ? 1 : 0);
+@@ -1010,6 +_,9 @@
+     }
+ 
+     private void writeOversizedMeta() throws IOException {
++        if (this.readOnly) {
++            return;
++        }
+         java.nio.file.Files.write(getOversizedMetaFile(), oversized);
+     }
+ 

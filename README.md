@@ -1,3 +1,28 @@
+
+# Purpur-ReadOnly
+
+Quick patch to add support for read-only worlds in Purpur.
+
+This is designed to be used with my [Multiverse-Core-ReadOnly fork](https://github.com/Franck-Nein/Multiverse-Core-ReadOnly), but you can also enable read-only mode for worlds without Multiverse by using the JVM flag:
+
+```bash
+-Dpurpur.read-only-worlds=world1,world2,...
+```
+
+Example server start command:
+
+```bash
+java -Dpurpur.read-only-worlds=world,world_nether,world_the_end -jar purpur-server.jar
+```
+
+This will make the specified worlds operate in read-only mode at the region file level. No region/chunk/structure data will be written to disk for these worlds, even if the region folder is writable. This is useful for minigame maps, museum/archive servers, or any world you want to keep unmodified.
+
+**Note:**
+- If a world is set as read-only, Purpur will open its region files in read-only mode and skip all save operations. If the region folder does not exist, it will be created as needed for new worlds.
+- You can use this feature independently or together with my [Multiverse-Core-ReadOnly fork's](https://github.com/Franck-Nein/Multiverse-Core-ReadOnly) per-world `read-only` flag for better control.
+
+---
+
 <div align="center">
 
 <a href="https://purpurmc.org">
